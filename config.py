@@ -13,9 +13,18 @@ load_dotenv()
 class Config:
     """Application configuration."""
     
+    # LLM Configuration - Support both Ollama and Google Gemini
+    LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini")  # "gemini" or "ollama"
+    
+    # Google Gemini Configuration
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+    GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    
     # Ollama Configuration
     OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-    LLM_MODEL = os.getenv("LLM_MODEL", "neural-chat")
+    OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "neural-chat")
+    
+    LLM_MODEL = os.getenv("LLM_MODEL", "gemini-1.5-flash")
     
     # Data Configuration
     DATA_DIR = os.getenv("DATA_DIR", "data/candidate_info")
@@ -77,8 +86,12 @@ class Config:
         Returns:
             True if configuration is valid
         """
-        if not cls.OLLAMA_BASE_URL:
-            raise ValueError("OLLAMA_BASE_URL not set in environment variables")
+        if cls.LLM_PROVIDER == "gemini":
+            if not cls.GEMINI_API_KEY:
+                raise ValueError("GEMINI_API_KEY not set in environment variables")
+        elif cls.LLM_PROVIDER == "ollama":
+            if not cls.OLLAMA_BASE_URL:
+                raise ValueError("OLLAMA_BASE_URL not set in environment variables")
         return True
 
 
@@ -94,8 +107,8 @@ class Constants:
     WELCOME_MESSAGE = "Welcome to TalentScout! I'm your AI hiring assistant."
     
     # Error messages
-    ERROR_NO_API_KEY = "Ollama connection not found. Please ensure Ollama is running at http://localhost:11434"
-    ERROR_API_CONNECTION = "Unable to connect to Ollama API. Please check that Ollama is running locally."
+    ERROR_NO_API_KEY = "API key not configured. Please set GEMINI_API_KEY or OLLAMA_BASE_URL in environment."
+    ERROR_API_CONNECTION = "Unable to connect to LLM API. Please check your configuration."
     ERROR_DATA_SAVE = "Error saving candidate information. Please try again."
     
     # Success messages

@@ -1,6 +1,6 @@
 """
 LLM Integration module for TalentScout Hiring Assistant.
-Handles communication with Ollama API locally and response generation.
+Handles communication with Google Gemini or Ollama APIs.
 """
 
 import os
@@ -12,28 +12,58 @@ from core import ConversationManager, PromptManager, ConversationState
 # Load environment variables
 load_dotenv()
 
+# Try to import Google Generative AI
+try:
+    import google.generativeai as genai
+    GEMINI_AVAILABLE = True
+except ImportError:
+    GEMINI_AVAILABLE = False
+
 
 class HiringAssistant:
-    """Main class for the Hiring Assistant chatbot with Ollama integration."""
+    """Main class for the Hiring Assistant chatbot with LLM integration."""
 
-    def __init__(self, base_url: Optional[str] = None, model: str = "neural-chat"):
+    def __init__(self, provider: Optional[str] = None, model: str = "neural-chat"):
         """
-        Initialize the Hiring Assistant with Ollama.
+        Initialize the Hiring Assistant with Gemini or Ollama.
         
         Args:
-            base_url: Ollama base URL (defaults to OLLAMA_BASE_URL env var)
-            model: LLM model to use (default: mistral)
+            provider: LLM provider ("gemini" or "ollama")
+            model: LLM model to use
         """
-        self.base_url = base_url or os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-        self.model = model
+        self.provider = provider or os.getenv("LLM_PROVIDER", "gemini")
         self.conversation_manager = ConversationManager()
         self.system_prompt = PromptManager.get_system_prompt()
         
-        # Test connection
-        if not self._test_connection():
-            raise ValueError(f"Cannot connect to Ollama at {self.base_url}. Make sure Ollama is running.")
+        if self.provider == "gemini":
+            self._init_gemini()
+        elif self.provider == "ollama":
+            self._init_ollama(model)
+        else:
+            raise ValueError(f"Unknown provider: {self.provider}")
 
-    def _test_connection(self) -> bool:
+    def _init_gemini(self):
+        """Initialize Google Gemini API."""
+        if not GEMINI_AVAILABLE:
+            raise ImportError("google-generativeai not installed. Run: pip install google-generativeai")
+        
+        api_key = os.getenv("GEMINI_API_KEY")
+        if not api_key or api_key == "your-gemini-api-key-here":
+            raise ValueError("GEMINI_API_KEY not set or invalid. Please add your API key to .env file.")
+        
+        genai.configure(api_key=api_key)
+        self.model_name = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+        self.gemini_model = genai.GenerativeModel(self.model_name)
+
+    def _init_ollama(self, model: str):
+        """Initialize Ollama."""
+        self.base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        self.model = model or os.getenv("OLLAMA_MODEL", "neural-chat")
+        
+        if not self._test_ollama_connection():
+            raise ValueError(f"Cannot connect to Ollama at {self.base_url}")
+
+    def _test_ollama_connection(self) -> bool:
         """Test connection to Ollama server."""
         try:
             response = requests.get(f"{self.base_url}/api/tags", timeout=2)
@@ -43,7 +73,7 @@ class HiringAssistant:
 
     def _call_llm(self, messages: List[dict], temperature: float = 0.7) -> Optional[str]:
         """
-        Call the Ollama API with the given messages.
+        Call the LLM API with the given messages.
         
         Args:
             messages: List of message dictionaries
@@ -52,8 +82,36 @@ class HiringAssistant:
         Returns:
             Generated response or None if error
         """
+        if self.provider == "gemini":
+            return self._call_gemini(messages, temperature)
+        else:
+            return self._call_ollama(messages, temperature)
+
+    def _call_gemini(self, messages: List[dict], temperature: float = 0.7) -> Optional[str]:
+        """Call Google Gemini API."""
         try:
-            # Format messages for Ollama
+            # Format messages for Gemini
+            prompt_text = ""
+            for msg in messages:
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                prompt_text += f"{role}: {content}\n"
+            
+            response = self.gemini_model.generate_content(
+                prompt_text,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=temperature,
+                    max_output_tokens=500,
+                )
+            )
+            return response.text.strip() if response.text else None
+        except Exception as e:
+            print(f"Gemini API Error: {e}")
+            return None
+
+    def _call_ollama(self, messages: List[dict], temperature: float = 0.7) -> Optional[str]:
+        """Call Ollama API."""
+        try:
             prompt_text = ""
             for msg in messages:
                 role = msg.get("role", "user")
@@ -77,10 +135,10 @@ class HiringAssistant:
             if response.status_code == 200:
                 return response.json().get("response", "").strip()
             else:
-                print(f"Ollama Error: {response.status_code} - {response.text}")
+                print(f"Ollama Error: {response.status_code}")
                 return None
         except Exception as e:
-            print(f"API Error: {e}")
+            print(f"Ollama Error: {e}")
             return None
 
     def get_greeting(self) -> str:
@@ -107,14 +165,12 @@ class HiringAssistant:
         Returns:
             Tuple of (response_message, should_exit)
         """
-        # Check for exit intent
         if self.conversation_manager.is_exit_intent(user_input):
             return self._generate_closing_message(), True
 
         self.conversation_manager.add_to_history("user", user_input)
         current_state = self.conversation_manager.get_current_state()
 
-        # Route to appropriate handler based on state
         if current_state == ConversationState.NAME_COLLECTION:
             return self._handle_name_collection(user_input)
         elif current_state == ConversationState.CONTACT_COLLECTION:
@@ -149,7 +205,6 @@ class HiringAssistant:
         emails = self._extract_email(user_input)
         phones = self._extract_phone(user_input)
         
-        # If we already have email, just need phone
         if candidate.email:
             if phones:
                 self.conversation_manager.update_candidate_info("phone", phones[0])
@@ -158,12 +213,10 @@ class HiringAssistant:
                     f"Perfect! Phone saved: {phones[0]}. How many years of experience do you have?"
                 ), False
             else:
-                # Phone number not found, ask again
                 return self._generate_response(
                     "I couldn't find a valid phone number. Could you provide it in formats like: 123-456-7890 or (123) 456-7890?"
                 ), False
         
-        # Need email first
         if not emails:
             return self._generate_response(
                 "I couldn't find a valid email address. Could you please provide your email in the format: yourname@example.com?"
@@ -318,11 +371,10 @@ class HiringAssistant:
     def _extract_phone(self, text: str) -> List[str]:
         """Extract phone numbers from text."""
         import re
-        # Simple pattern for various phone formats
         patterns = [
-            r'\b\d{3}[-.]?\d{3}[-.]?\d{4}\b',  # XXX-XXX-XXXX or XXX.XXX.XXXX
-            r'\b\(\d{3}\)\s?\d{3}[-.]?\d{4}\b',  # (XXX) XXX-XXXX
-            r'\b\+?1?\s?\d{10}\b'  # 10 digit with optional +1
+            r'\b\d{3}[-.]?\d{3}[-.]?\d{4}\b',
+            r'\b\(\d{3}\)\s?\d{3}[-.]?\d{4}\b',
+            r'\b\+?1?\s?\d{10}\b'
         ]
         for pattern in patterns:
             matches = re.findall(pattern, text)
@@ -332,7 +384,6 @@ class HiringAssistant:
 
     def _parse_tech_stack(self, text: str) -> List[str]:
         """Parse tech stack from user input."""
-        # Common technologies to look for
         common_techs = [
             'Python', 'JavaScript', 'TypeScript', 'Java', 'C++', 'C#', 'Go', 'Rust', 'PHP', 'Ruby',
             'React', 'Vue', 'Angular', 'Node.js', 'Django', 'Flask', 'FastAPI', 'Spring', 'Express',
@@ -348,7 +399,6 @@ class HiringAssistant:
             if tech.lower() in text_lower:
                 found_techs.append(tech)
         
-        # If no common techs found, split by common delimiters
         if not found_techs:
             items = [item.strip() for item in text.replace(',', ' ').replace(';', ' ').split()]
             found_techs = [item for item in items if len(item) > 2]
@@ -360,6 +410,6 @@ if __name__ == "__main__":
     try:
         assistant = HiringAssistant()
         print("Hiring Assistant initialized successfully!")
-    except ValueError as e:
+    except Exception as e:
         print(f"Error: {e}")
-        print("Please ensure Ollama is running at http://localhost:11434")
+        print("Please ensure you have configured either Gemini API key or Ollama properly")
